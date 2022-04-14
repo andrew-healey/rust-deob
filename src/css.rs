@@ -3,8 +3,6 @@ use ressa::Parser;
 use resast::expr::Expr;
 use resast::prelude::*;
 
-//use std::fmt::Debug;
-
 use r_deob::Selectable;
 
 type Pred = Box<dyn Fn(&Selectable) -> bool>;
@@ -42,7 +40,6 @@ impl<'a> PredList<'a> {
     ) where
         'a: 'b,
     {
-
         self.block_stack
             .push((selectable, vec![None; self.sub_preds.len()]));
         if self.run_predicate(selectable) {
@@ -59,11 +56,17 @@ impl<'a> PredList<'a> {
                     self.append_matches(Selectable::ProgramPart(part), matches);
                 }
             }
-            Selectable::ProgramPart(part) => {
-                match part {
-                    ProgramPart::Stmt(stmt) => self.append_matches(Selectable::Stmt(stmt), matches),
-                    _ => (),
+            Selectable::ProgramPart(part) => match part {
+                ProgramPart::Stmt(stmt) => self.append_matches(Selectable::Stmt(stmt), matches),
+                ProgramPart::Decl(Decl::Var(_,decls))=>{
+                    for VarDecl {init,..} in decls {
+                        if let Some(expr) = init {
+                            self.append_matches(Selectable::Expr(expr),matches);
+                        }
+                    }
+
                 }
+                _ => (),
             },
             Selectable::Expr(expr) => match expr {
                 Expr::Call(CallExpr { callee, arguments }) => {
@@ -71,6 +74,34 @@ impl<'a> PredList<'a> {
                     for arg in arguments {
                         self.append_matches(Selectable::Expr(arg), matches);
                     }
+                }
+                Expr::Member(MemberExpr {
+                    object, property, ..
+                }) => self.append_exprs(&[object, property], matches),
+                Expr::Logical(LogicalExpr { left, right, .. }) => {
+                    self.append_exprs(&[left, right], matches)
+                }
+                Expr::Binary(BinaryExpr {left,right,..})=>{
+                    self.append_exprs(&[left,right],matches)
+                }
+                Expr::Unary(UnaryExpr {argument,..})=>{
+                    self.append_exprs(&[argument],matches)
+                }
+                Expr::Array(exprs)=>{
+                    for el in exprs {
+                        if let Some(expr) = el {
+                            self.append_matches(Selectable::Expr(expr),matches)
+                        }
+                    }
+                }
+                Expr::Assign(AssignExpr{left,right,..})=>{
+                    self.append_exprs(&[right],matches);
+                    if let AssignLeft::Expr(left) = left {
+                        self.append_exprs(&[left],matches);
+                    }
+                }
+                Expr::ArrowFunc(ArrowFuncExpr {params,body,..})=>{
+                    // TODO Arrow functions. Params and body both.
                 }
                 _ => (),
             },
@@ -82,6 +113,21 @@ impl<'a> PredList<'a> {
             _ => (),
         };
         self.block_stack.pop();
+    }
+    /*
+     * Rationale for 'c generic, IntoIterator shenanigans:
+     * https://stackoverflow.com/questions/35144386/passing-slice-as-an-intoiterator
+     */
+    fn append_exprs<'b: 'c, 'c, T: IntoIterator<Item = &'c &'a Box<Expr<'a>>>>(
+        &mut self,
+        exprs: T,
+        matches: &'b mut Vec<Selectable<'a>>,
+    ) where
+        'a: 'b,
+    {
+        for expr in exprs {
+            self.append_matches(Selectable::Expr(&*expr), matches);
+        }
     }
     fn run_predicate(&mut self, selectable: Selectable<'a>) -> bool {
         let last = self.sub_preds.len() - 1;
@@ -114,7 +160,7 @@ impl<'a> PredList<'a> {
 fn main() {
     let contents = "
     console.log(1,2,3);
-    const a=3;
+    const a='some string';
     ";
 
     let mut parser = Parser::new(&contents[..]).expect("Failed to make parser");

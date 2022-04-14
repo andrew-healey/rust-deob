@@ -6,7 +6,7 @@ use resw::Writer;
 
 use std::borrow::Cow;
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use resast::expr::Expr;
 use resast::prelude::*;
