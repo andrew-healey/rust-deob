@@ -3,6 +3,18 @@ name = "rust-deob"
 version = "0.1.0"
 edition = "2018"
 
+[[bin]]
+name="deblockify"
+path="src/main.rs"
+
+[[bin]]
+name="css"
+path="src/css.rs"
+
+[lib]
+name="r_deob"
+path="src/lib.rs"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
