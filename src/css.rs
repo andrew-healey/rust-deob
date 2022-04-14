@@ -58,13 +58,12 @@ impl<'a> PredList<'a> {
             }
             Selectable::ProgramPart(part) => match part {
                 ProgramPart::Stmt(stmt) => self.append_matches(Selectable::Stmt(stmt), matches),
-                ProgramPart::Decl(Decl::Var(_,decls))=>{
-                    for VarDecl {init,..} in decls {
+                ProgramPart::Decl(Decl::Var(_, decls)) => {
+                    for VarDecl { init, .. } in decls {
                         if let Some(expr) = init {
-                            self.append_matches(Selectable::Expr(expr),matches);
+                            self.append_matches(Selectable::Expr(expr), matches);
                         }
                     }
-
                 }
                 _ => (),
             },
@@ -81,26 +80,22 @@ impl<'a> PredList<'a> {
                 Expr::Logical(LogicalExpr { left, right, .. }) => {
                     self.append_exprs(&[left, right], matches)
                 }
-                Expr::Binary(BinaryExpr {left,right,..})=>{
-                    self.append_exprs(&[left,right],matches)
+                Expr::Binary(BinaryExpr { left, right, .. }) => {
+                    self.append_exprs(&[left, right], matches)
                 }
-                Expr::Unary(UnaryExpr {argument,..})=>{
-                    self.append_exprs(&[argument],matches)
-                }
-                Expr::Array(exprs)=>{
-                    for el in exprs {
-                        if let Some(expr) = el {
-                            self.append_matches(Selectable::Expr(expr),matches)
-                        }
+                Expr::Unary(UnaryExpr { argument, .. }) => self.append_exprs(&[argument], matches),
+                Expr::Array(exprs) => {
+                    for expr in exprs.iter().flatten() {
+                        self.append_matches(Selectable::Expr(expr), matches)
                     }
                 }
-                Expr::Assign(AssignExpr{left,right,..})=>{
-                    self.append_exprs(&[right],matches);
+                Expr::Assign(AssignExpr { left, right, .. }) => {
+                    self.append_exprs(&[right], matches);
                     if let AssignLeft::Expr(left) = left {
-                        self.append_exprs(&[left],matches);
+                        self.append_exprs(&[left], matches);
                     }
                 }
-                Expr::ArrowFunc(ArrowFuncExpr {params,body,..})=>{
+                Expr::ArrowFunc(ArrowFuncExpr { params, body, .. }) => {
                     // TODO Arrow functions. Params and body both.
                 }
                 _ => (),
@@ -163,19 +158,13 @@ fn main() {
     const a='some string';
     ";
 
-    let mut parser = Parser::new(&contents[..]).expect("Failed to make parser");
+    let mut parser = Parser::new(contents).expect("Failed to make parser");
 
     let program = parser.parse().expect("Failed to parse");
 
-    let lit_pred = |x: &Selectable| match x {
-        Selectable::Expr(Expr::Lit(_)) => true,
-        _ => false,
-    };
+    let lit_pred = |x: &Selectable| matches!(x, Selectable::Expr(Expr::Lit(_)));
 
-    let prog_pred = |x: &Selectable| match x {
-        Selectable::Program(Program::Script(_)) => true,
-        _ => false,
-    };
+    let prog_pred = |x: &Selectable| matches!(x, Selectable::Program(_));
 
     let my_preds: Vec<Pred> = vec![Box::new(prog_pred), Box::new(lit_pred)];
 
