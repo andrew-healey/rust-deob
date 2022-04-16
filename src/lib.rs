@@ -1,6 +1,8 @@
 use resast::expr::Expr;
 use resast::prelude::*;
 use std::fmt::Debug;
+use std::ptr::eq;
+
 // Any ResAST enum/struct that can be converted into a Block.
 #[derive(Debug)]
 pub enum Blockable<'a> {
@@ -11,7 +13,7 @@ pub enum Blockable<'a> {
     Block(BlockStmt<'a>),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy,PartialEq)]
 pub enum Selectable<'a> {
     Program(&'a Program<'a>),
     ProgramPart(&'a ProgramPart<'a>),
