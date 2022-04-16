@@ -1,7 +1,6 @@
 use resast::expr::Expr;
 use resast::prelude::*;
 use std::fmt::Debug;
-use std::ptr::eq;
 
 // Any ResAST enum/struct that can be converted into a Block.
 #[derive(Debug)]

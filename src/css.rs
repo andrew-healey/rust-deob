@@ -3,15 +3,14 @@ use ressa::Parser;
 use resast::expr::Expr;
 use resast::prelude::*;
 
-use std::cmp::max;
-
 use r_deob::Selectable;
 
-type Pred = Box<dyn Fn(&Selectable, Option<&Selectable>) -> bool>;
+type Pred = Box<dyn Fn(&[Selectable]) -> bool>;
 
 struct PredList<'a> {
     sub_preds: Vec<Pred>,
-    block_stack: Vec<(Selectable<'a>, Vec<Option<bool>>)>,
+    sub_pred_cache:Vec<Vec<Option<bool>>>,
+    block_stack: Vec<Selectable<'a>>,
 }
 
 impl<'a> PredList<'a> {
@@ -19,6 +18,7 @@ impl<'a> PredList<'a> {
         PredList {
             sub_preds,
             block_stack: vec![],
+            sub_pred_cache:vec![]
         }
     }
     // 1: push empty predicate eval. onto stack.
@@ -106,10 +106,12 @@ impl<'a> PredList<'a> {
                     }
                     children
                 }
+                /*
                 Expr::ArrowFunc(ArrowFuncExpr { params, body, .. }) => {
                     // TODO Arrow functions. Params sib body both.
                     vec![]
                 }
+                */
                 _ => vec![],
             },
             Selectable::Stmt(stmt) => match stmt {
@@ -127,9 +129,9 @@ impl<'a> PredList<'a> {
     ) where
         'a: 'b,
     {
-        self.block_stack
-            .push((selectable, vec![None; self.sub_preds.len()]));
-        if self.run_predicate(selectable) {
+        self.block_stack.push(selectable);
+        self.sub_pred_cache.push(vec![None; self.sub_preds.len()]);
+        if self.run_predicate() {
             matches.push(selectable);
         }
 
@@ -141,44 +143,25 @@ impl<'a> PredList<'a> {
 
         self.block_stack.pop();
     }
-    fn run_predicate(&mut self, selectable: Selectable<'a>) -> bool {
+    fn run_predicate(&mut self) -> bool {
         let last = self.sub_preds.len() - 1;
         let right_sub_pred = &self.sub_preds[last];
-        let last = self.block_stack.len() - 1;
-        let parent = if last>=1 {
-            self.block_stack.get(last - 1).map(|(parent, _)| parent)
-        } else {
-            None
-        };
-        let matches_right = right_sub_pred(&selectable, parent);
+        let matches_right = right_sub_pred(&self.block_stack[..]);
         matches_right && {
             let mut sub_pred_idx = self.sub_preds.len();
             let mut block_idx = self.block_stack.len();
 
-            while block_idx > 0 && sub_pred_idx > 0 {
-                let mut stack_slice = &mut self.block_stack[(max(2, block_idx) - 2)..block_idx];
-                let found_pred = match &mut stack_slice {
-                    &mut [(parent, _), (block, res)] => {
-                        let new_bool = match res[sub_pred_idx - 1] {
-                            None => self.sub_preds[sub_pred_idx - 1](&block, Some(&parent)),
-                            Some(bl) => bl,
-                        };
-
-                        res[sub_pred_idx - 1] = Some(new_bool);
-                        new_bool
-                    }
-                    &mut [(block, res)] => {
-                        let new_bool = match res[sub_pred_idx - 1] {
-                            None => self.sub_preds[sub_pred_idx - 1](&block, None),
-                            Some(bl) => bl,
-                        };
-
-                        res[sub_pred_idx - 1] = Some(new_bool);
-                        new_bool
-                    }
-                    _ => false,
+            while sub_pred_idx > 0 && block_idx>=sub_pred_idx {
+                let cached=&mut self.sub_pred_cache[block_idx-1];
+                let pred_val=match cached[sub_pred_idx-1]{
+                    None=>{
+                        let ret=Some(self.sub_preds[sub_pred_idx-1](&self.block_stack[..block_idx]));
+                        cached[sub_pred_idx-1]=ret;
+                        ret
+                    },
+                    some=>some
                 };
-                if found_pred {
+                if let Some(true)=pred_val {
                     sub_pred_idx -= 1;
                 }
                 block_idx -= 1;
@@ -191,37 +174,59 @@ impl<'a> PredList<'a> {
 
 macro_rules! pred {
     ($pattern:pat) => {
-        |x:&Selectable,_:Option<&Selectable>| matches!(x, $pattern)
+        |stack:&[Selectable]|
+            matches!(stack[stack.len()-1],$pattern)
+        //|x:&Selectable,_:Option<&Selectable>| matches!(x, $pattern)
     };
     (sib $pattern:pat) => {
         pred!($pattern)
     };
     (sib $main:pat , $($sibling:pat) ,+) => {
-        |x:&Selectable,parent:Option<&Selectable>|{
+        |stack:&[Selectable]|{
             // Example of pointer equality testing:
             // https://play.rust-lang.org/?version=stable&mode=debug&edition=2021&gist=bf4a7cac44a628e93c955da5fe85ead0
-            pred!($main)(x,parent)&&match parent{
-                Some(parent)=>{
+            pred!($main)(&stack[stack.len()-1..])
+                &&
+                if stack.len()>2{
+                    let parent=&stack[stack.len()-2];
                     let children=PredList::get_children(parent);
+                    let x=stack[stack.len()-1];
                     //println!("{:#?}",children);
-                    let x_idx=children.iter().position(|child|*child==*x);
-                    if x_idx.is_none(){
-                        println!("{:?}
-                            :
-                        {:?}",children,x);
-                    }
+                    let x_idx=children.iter().position(|child|*child==x);
                     let x_idx=x_idx.expect("Node is not a child of its parent");
-                    x_idx>0 && pred!(sib $($sibling),+)(&children[x_idx-1],Some(parent))
+                    x_idx>0 && pred!(sib $($sibling),+)(
+                        &[&stack[..stack.len()-1],&[children[x_idx-1]]].concat()[..]
+                    )
+                } else {
+                    false
                 }
-                None=>false
-            }
         }
-    }
+    };
 }
+
+/*
+macro_rules! add {
+    (desc $sel:expr,$pred:expr)=>{
+        $sel.push(Box::new($pred))
+    };
+    (child $sel:expr,$pred:expr)=>{{
+        let curr_final=$sel.pop();
+        $sel.push(|x:&Selector<'a>,parent:Option<&Selector<'a>>|{
+            match parent {
+                _=>false,
+                Some(parent)=>{
+                    curr_final(
+                }
+            }
+        });
+        $sel.push(|_,_|true);
+    }}
+}
+*/
 
 fn main() {
     let contents = "
-    console.log(1,2,3);
+    console.log(1,2,3,4,5);
     const a='some string';
     ";
 
