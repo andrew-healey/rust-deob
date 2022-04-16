@@ -24,7 +24,7 @@ impl<'a> PredList<'a> {
     // 1: push empty predicate eval. onto stack.
     // 2: run predicate on self.
     //   2a: run+cache right-most sub-predicate on self. If false, you are done.
-    //   2b: rinse and repeat:
+    //   2b: rinse sib repeat:
     //       pick next-right-most sub-predicate.
     //       look up the stack until current sub-predicate (run+cache) is true.
     //   2c: if left-most predicate is true, push self to matches.
@@ -107,7 +107,7 @@ impl<'a> PredList<'a> {
                     children
                 }
                 Expr::ArrowFunc(ArrowFuncExpr { params, body, .. }) => {
-                    // TODO Arrow functions. Params and body both.
+                    // TODO Arrow functions. Params sib body both.
                     vec![]
                 }
                 _ => vec![],
@@ -193,7 +193,10 @@ macro_rules! pred {
     ($pattern:pat) => {
         |x:&Selectable,_:Option<&Selectable>| matches!(x, $pattern)
     };
-    ($main:pat | $($sibling:pat)|+) => {
+    (sib $pattern:pat) => {
+        pred!($pattern)
+    };
+    (sib $main:pat , $($sibling:pat) ,+) => {
         |x:&Selectable,parent:Option<&Selectable>|{
             // Example of pointer equality testing:
             // https://play.rust-lang.org/?version=stable&mode=debug&edition=2021&gist=bf4a7cac44a628e93c955da5fe85ead0
@@ -208,7 +211,7 @@ macro_rules! pred {
                         {:?}",children,x);
                     }
                     let x_idx=x_idx.expect("Node is not a child of its parent");
-                    x_idx+1<children.len() && pred!($($sibling)|+)(&children[x_idx+1],Some(parent))
+                    x_idx>0 && pred!(sib $($sibling),+)(&children[x_idx-1],Some(parent))
                 }
                 None=>false
             }
@@ -226,11 +229,13 @@ fn main() {
 
     let program = parser.parse().expect("Failed to parse");
 
+    let prog_pred = pred!{
+        Selectable::Program(_)
+    };
     let lit_pred = pred!{
-        Selectable::Expr(Expr::Lit(_))|Selectable::Expr(Expr::Lit(_))
-    }; //|x: &Selectable| matches!(x, Selectable::Expr(Expr::Lit(_)));
+        sib Selectable::Expr(Expr::Lit(_)) , Selectable::Expr(Expr::Lit(_)), Selectable::Expr(Expr::Lit(_))
 
-    let prog_pred = pred!(Selectable::Program(_)); // |x: &Selectable,_| matches!(x, Selectable::Program(_));
+    };
 
     let my_preds: Vec<Pred> = vec![Box::new(prog_pred), Box::new(lit_pred)];
 
