@@ -3,6 +3,8 @@ use ressa::Parser;
 use resast::expr::Expr;
 use resast::prelude::*;
 
+use std::time::Instant;
+
 use r_deob::Selectable;
 
 type Pred = Box<dyn Fn(&[Selectable]) -> bool>;
@@ -248,5 +250,11 @@ fn main() {
 
     let mut pred_list = PredList::new(my_preds);
 
-    println!("{:?}", pred_list.find_matches(selectable));
+
+    let start = Instant::now();
+
+    pred_list.find_matches(selectable);
+
+    let elapsed = start.elapsed().subsec_micros();
+    println!("micros: {}", elapsed);
 }
