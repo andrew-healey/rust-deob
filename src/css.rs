@@ -1,4 +1,5 @@
 use ressa::Parser;
+use std::fs;
 
 use resast::expr::Expr;
 use resast::prelude::*;
@@ -11,7 +12,7 @@ type Pred = Box<dyn Fn(&[Selectable]) -> bool>;
 
 struct PredList<'a> {
     sub_preds: Vec<Pred>,
-    sub_pred_cache:Vec<Vec<Option<bool>>>,
+    sub_pred_cache: Vec<Vec<Option<bool>>>,
     block_stack: Vec<Selectable<'a>>,
 }
 
@@ -20,7 +21,7 @@ impl<'a> PredList<'a> {
         PredList {
             sub_preds,
             block_stack: vec![],
-            sub_pred_cache:vec![]
+            sub_pred_cache: vec![],
         }
     }
     // 1: push empty predicate eval. onto stack.
@@ -59,6 +60,7 @@ impl<'a> PredList<'a> {
         */
     }
     fn get_children(selectable: &Selectable<'a>) -> Vec<Selectable<'a>> {
+
         match selectable {
             Selectable::Program(prog) => {
                 let parts = match prog {
@@ -72,35 +74,47 @@ impl<'a> PredList<'a> {
             }
             Selectable::ProgramPart(part) => match part {
                 ProgramPart::Stmt(stmt) => vec![Selectable::Stmt(stmt)],
+                ProgramPart::Decl(Decl::Func(func))=>{
+                    vec![
+                        Selectable::Func(&func)
+                    ]
+                }
                 ProgramPart::Decl(Decl::Var(_, decls)) => {
-                    let mut children = vec![];
-                    for VarDecl { init, .. } in decls {
-                        if let Some(expr) = init {
-                            children.push(Selectable::Expr(expr));
-                        }
-                    }
-                    children
+                    decls.into_iter().map(Selectable::VarDecl).collect()
                 }
                 _ => vec![],
             },
-            Selectable::Expr(expr) => match expr {
-                Expr::Call(CallExpr { callee, arguments }) => {
-                    let mut children: Vec<Selectable<'a>> = PredList::pack_exprs(&[callee]);
-                    children.append(&mut arguments.iter().map(Selectable::Expr).collect());
+            Selectable::Func(Func { params, body, .. }) => {
+                    let mut children: Vec<Selectable> = params
+                        .into_iter()
+                        .map(|arg| match arg {
+                            FuncArg::Expr(expr) => Selectable::Expr(expr),
+                            FuncArg::Pat(pat) => Selectable::Pat(pat),
+                        })
+                        .collect();
+                    let FuncBody(parts) = body;
+                    children.append(&mut parts.iter().map(Selectable::ProgramPart).collect());
                     children
                 }
-                Expr::Member(MemberExpr {
-                    object, property, ..
-                }) => PredList::pack_exprs(&[object, property]),
-                Expr::Logical(LogicalExpr { left, right, .. }) => {
-                    PredList::pack_exprs(&[right, left])
-                }
-
-                Expr::Binary(BinaryExpr { left, right, .. }) => {
-                    PredList::pack_exprs(&[left, right])
-                }
-                Expr::Unary(UnaryExpr { argument, .. }) => PredList::pack_exprs(&[argument]),
+            Selectable::Expr(expr) => match expr {
                 Expr::Array(exprs) => exprs.iter().flatten().map(Selectable::Expr).collect(),
+                Expr::ArrowFunc(ArrowFuncExpr { params, body, .. }) => {
+                    let mut children: Vec<Selectable> = params
+                        .into_iter()
+                        .map(|arg| match arg {
+                            FuncArg::Expr(expr) => Selectable::Expr(expr),
+                            FuncArg::Pat(pat) => Selectable::Pat(pat),
+                        })
+                        .collect();
+                    match body {
+                        ArrowFuncBody::FuncBody(FuncBody(parts)) => {
+                            children
+                                .append(&mut parts.iter().map(Selectable::ProgramPart).collect());
+                        }
+                        ArrowFuncBody::Expr(expr) => children.push(Selectable::Expr(&*expr)),
+                    };
+                    children
+                }
                 Expr::Assign(AssignExpr { left, right, .. }) => {
                     let mut children = PredList::pack_exprs(&[right]);
                     if let AssignLeft::Expr(left) = left {
@@ -108,19 +122,206 @@ impl<'a> PredList<'a> {
                     }
                     children
                 }
-                /*
-                Expr::ArrowFunc(ArrowFuncExpr { params, body, .. }) => {
-                    // TODO Arrow functions. Params sib body both.
-                    vec![]
+                Expr::Await(expr) => PredList::pack_exprs(&[expr]),
+                Expr::Binary(BinaryExpr { left, right, .. }) => {
+                    PredList::pack_exprs(&[left, right])
                 }
-                */
+                Expr::Call(CallExpr { callee, arguments }) => {
+                    let mut children: Vec<Selectable<'a>> = PredList::pack_exprs(&[callee]);
+                    children.append(&mut arguments.iter().map(Selectable::Expr).collect());
+                    children
+                }
+                Expr::Class(Class {
+                    super_class,
+                    body: ClassBody(props),
+                    ..
+                }) => {
+                    let mut children = match super_class {
+                        Some(expr) => PredList::pack_exprs(&[expr]),
+                        None => PredList::pack_exprs(&[]),
+                    };
+                    children.append(&mut props.into_iter().map(|p| Selectable::Prop(&p)).collect());
+                    children
+                }
+                Expr::Conditional(ConditionalExpr {
+                    test,
+                    alternate,
+                    consequent,
+                }) => PredList::pack_exprs(&[test, alternate, consequent]),
+                Expr::Func(func)=>{
+                    vec![
+                        Selectable::Func(func)
+                    ]
+                }
+                Expr::Logical(LogicalExpr { left, right, .. }) => {
+                    PredList::pack_exprs(&[right, left])
+                }
+                Expr::Member(MemberExpr {
+                    object, property, ..
+                }) => PredList::pack_exprs(&[object, property]),
+                Expr::New(NewExpr { callee, arguments }) => {
+                    let mut children: Vec<Selectable<'a>> = PredList::pack_exprs(&[callee]);
+                    children.append(&mut arguments.iter().map(Selectable::Expr).collect());
+                    children
+                }
+                Expr::Obj(props) => props
+                    .into_iter()
+                    .map(|p| match p {
+                        ObjProp::Prop(prop) => Selectable::Prop(prop),
+                        ObjProp::Spread(expr) => Selectable::Expr(expr),
+                    })
+                    .collect(),
+                Expr::Sequence(exprs) => exprs.into_iter().map(Selectable::Expr).collect(),
+                Expr::Spread(expr) => PredList::pack_exprs(&[expr]),
+                Expr::Unary(UnaryExpr { argument, .. }) => PredList::pack_exprs(&[argument]),
+                Expr::Update(UpdateExpr { argument, .. }) => PredList::pack_exprs(&[argument]),
                 _ => vec![],
             },
+            Selectable::Block(BlockStmt(parts)) => {
+                parts.into_iter().map(Selectable::ProgramPart).collect()
+            }
             Selectable::Stmt(stmt) => match stmt {
                 Stmt::Expr(expr) => vec![Selectable::Expr(expr)],
+                Stmt::Block(block) => vec![Selectable::Block(&block)],
+                Stmt::With(WithStmt { object, body }) => {
+                    let mut children = vec![Selectable::Expr(&object)];
+                    children.push(Selectable::Stmt(&*body));
+                    children
+                }
+                Stmt::Return(expr) => match expr {
+                    Some(expr) => vec![Selectable::Expr(expr)],
+                    None => vec![],
+                },
+                Stmt::Labeled(LabeledStmt { body, .. }) => {
+                    vec![Selectable::Stmt(&*body)]
+                }
+                Stmt::If(IfStmt {
+                    test,
+                    consequent,
+                    alternate,
+                }) => {
+                    let mut children =
+                        vec![Selectable::Expr(&test), Selectable::Stmt(&*consequent)];
+                    if let Some(alternate) = alternate {
+                        children.push(Selectable::Stmt(&*alternate));
+                    }
+                    children
+                }
+                Stmt::Switch(SwitchStmt {
+                    discriminant,
+                    cases,
+                }) => {
+                    let mut children = vec![Selectable::Expr(&discriminant)];
+                    children.append(
+                        &mut cases
+                            .into_iter()
+                            .flat_map(|SwitchCase { test, consequent }| {
+                                let mut ret = match test {
+                                    Some(expr) => vec![Selectable::Expr(&expr)],
+                                    None => vec![],
+                                };
+                                ret.append(
+                                    &mut consequent
+                                        .into_iter()
+                                        .map(|part| Selectable::ProgramPart(&part))
+                                        .collect(),
+                                );
+                                ret
+                            })
+                            .collect(),
+                    );
+                    children
+                }
+                Stmt::Throw(expr) => {
+                    vec![Selectable::Expr(expr)]
+                }
+                Stmt::Try(TryStmt {
+                    block,
+                    handler,
+                    finalizer,
+                }) => {
+                    let mut children = vec![Selectable::Block(&block)];
+                    if let Some(CatchClause { param, body }) = handler {
+                        if let Some(param) = param {
+                            children.push(Selectable::Pat(&param));
+                        }
+                        children.push(Selectable::Block(&body));
+                    }
+                    if let Some(block) = finalizer {
+                        children.push(Selectable::Block(&block));
+                    }
+                    children
+                }
+                Stmt::While(WhileStmt { test, body }) => {
+                    vec![Selectable::Expr(&test), Selectable::Stmt(&*body)]
+                }
+                Stmt::DoWhile(DoWhileStmt { test, body }) => {
+                    vec![Selectable::Stmt(&*body), Selectable::Expr(&test)]
+                }
+                Stmt::For(ForStmt {
+                    init,
+                    test,
+                    update,
+                    body,
+                }) => {
+                    let mut children = vec![];
+                    if let Some(init) = init {
+                        match init {
+                            LoopInit::Expr(expr) => children.push(Selectable::Expr(&expr)),
+                            LoopInit::Variable(_, decls) => children
+                                .append(&mut decls.into_iter().map(Selectable::VarDecl).collect()),
+                        };
+                    }
+
+                    if let Some(test) = test {
+                        children.push(Selectable::Expr(&test));
+                    }
+
+                    if let Some(update) = update {
+                        children.push(Selectable::Expr(&update));
+                    }
+
+                    children.push(Selectable::Stmt(&body));
+
+                    children
+                }
+                Stmt::ForIn(ForInStmt { left, right, body }) => {
+                    let mut children = vec![match left {
+                        LoopLeft::Expr(expr) => Selectable::Expr(&expr),
+                        LoopLeft::Pat(pat) => Selectable::Pat(&pat),
+                        LoopLeft::Variable(_, decl) => Selectable::VarDecl(decl),
+                    }];
+
+                    children.push(Selectable::Expr(&right));
+                    children.push(Selectable::Stmt(&*body));
+
+                    children
+                }
+                Stmt::ForOf(ForOfStmt {
+                    left, right, body, ..
+                }) => {
+                    let mut children = vec![match left {
+                        LoopLeft::Expr(expr) => Selectable::Expr(&expr),
+                        LoopLeft::Pat(pat) => Selectable::Pat(&pat),
+                        LoopLeft::Variable(_, decl) => Selectable::VarDecl(decl),
+                    }];
+
+                    children.push(Selectable::Expr(&right));
+                    children.push(Selectable::Stmt(&*body));
+
+                    children
+                }
+                Stmt::Var(decls) => decls.into_iter().map(Selectable::VarDecl).collect(),
                 _ => vec![],
             },
-            // TODO: Look for matches on children. Selectable pattern match.
+            Selectable::VarDecl(VarDecl { id, init }) => {
+                let mut children = vec![];
+                children.push(Selectable::Pat(&id));
+                if let Some(expr) = init {
+                    children.push(Selectable::Expr(expr));
+                }
+                children
+            }
             _ => vec![],
         }
     }
@@ -153,17 +354,19 @@ impl<'a> PredList<'a> {
             let mut sub_pred_idx = self.sub_preds.len();
             let mut block_idx = self.block_stack.len();
 
-            while sub_pred_idx > 0 && block_idx>=sub_pred_idx {
-                let cached=&mut self.sub_pred_cache[block_idx-1];
-                let pred_val=match cached[sub_pred_idx-1]{
-                    None=>{
-                        let ret=Some(self.sub_preds[sub_pred_idx-1](&self.block_stack[..block_idx]));
-                        cached[sub_pred_idx-1]=ret;
+            while sub_pred_idx > 0 && block_idx >= sub_pred_idx {
+                let cached = &mut self.sub_pred_cache[block_idx - 1];
+                let pred_val = match cached[sub_pred_idx - 1] {
+                    None => {
+                        let ret = Some(self.sub_preds[sub_pred_idx - 1](
+                            &self.block_stack[..block_idx],
+                        ));
+                        cached[sub_pred_idx - 1] = ret;
                         ret
-                    },
-                    some=>some
+                    }
+                    some => some,
                 };
-                if let Some(true)=pred_val {
+                if let Some(true) = pred_val {
                     sub_pred_idx -= 1;
                 }
                 block_idx -= 1;
@@ -231,17 +434,18 @@ fn main() {
     console.log(1,2,3,4,5);
     const a='some string';
     ";
+    let contents = fs::read_to_string("scripts/css_test.js").expect("BG file not found");
 
-    let mut parser = Parser::new(contents).expect("Failed to make parser");
+    let mut parser = Parser::new(&contents).expect("Failed to make parser");
 
     let program = parser.parse().expect("Failed to parse");
 
-    let prog_pred = pred!{
+    let prog_pred = pred! {
         Selectable::Program(_)
     };
-    let lit_pred = pred!{
-        sib Selectable::Expr(Expr::Lit(_)) , Selectable::Expr(Expr::Lit(_)), Selectable::Expr(Expr::Lit(_))
-
+    let lit_pred = pred! {
+        sib Selectable::Expr(Expr::Lit(Lit::Number(_))),
+        Selectable::Expr(Expr::Lit(Lit::Number(_)))
     };
 
     let my_preds: Vec<Pred> = vec![Box::new(prog_pred), Box::new(lit_pred)];
@@ -250,11 +454,13 @@ fn main() {
 
     let mut pred_list = PredList::new(my_preds);
 
-
     let start = Instant::now();
 
-    pred_list.find_matches(selectable);
-
+    let matches = pred_list.find_matches(selectable);
     let elapsed = start.elapsed().subsec_micros();
+
+    println!("{:?}", matches);
+    println!("Matches: {}", matches.len());
+
     println!("micros: {}", elapsed);
 }

@@ -12,11 +12,15 @@ pub enum Blockable<'a> {
     Block(BlockStmt<'a>),
 }
 
-#[derive(Debug, Clone, Copy,PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Selectable<'a> {
     Program(&'a Program<'a>),
     ProgramPart(&'a ProgramPart<'a>),
     Stmt(&'a Stmt<'a>),
     Expr(&'a Expr<'a>),
     Block(&'a BlockStmt<'a>),
+    Pat(&'a Pat<'a>),
+    Prop(&'a Prop<'a>),
+    VarDecl(&'a VarDecl<'a>),
+    Func(&'a Func<'a>),
 }
