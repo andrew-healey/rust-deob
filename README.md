@@ -13,11 +13,29 @@ There are two tools so far: a "deblockifier" and the start of a CSS selector eng
 Reverses a nasty form of obfuscation. For example, it converts this
 
 ```js
+function demo(){
+  return (some_func((statement1(),arg1),arg2),condition1||statement4(),statement5(),finalValue)
+};
+demo();
 ```
 
 to this:
 
 ```js
+function demo() {
+    statement1();
+    some_func(arg1, arg2);
+    let women = condition1;
+    if (!women) {
+        women = statement4();
+    }
+    statement5();
+    return finalValue;
+}
+
+;
+demo();
+
 ```
 
 ### Setup
